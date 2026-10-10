@@ -1,0 +1,602 @@
+"use client";
+
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  ArrowLeft,
+  CheckCircle2,
+  Clock,
+  Edit,
+  ExternalLink,
+  RotateCcw,
+  Send,
+  ShieldAlert,
+  User,
+  Wallet,
+  XCircle,
+} from "lucide-react";
+import Link from "next/link";
+import * as React from "react";
+import { EditInvoiceForm } from "@/components/admin/edit-invoice-form";
+import { ConfirmDialog } from "@/components/shared/confirm-dialog";
+import { DetailNotFound } from "@/components/shared/detail-not-found";
+import { InvoiceBreakdown } from "@/components/shared/invoice-breakdown";
+import { QueryError } from "@/components/shared/query-error";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Skeleton } from "@/components/ui/skeleton";
+import { StatusBadge } from "@/components/ui/status-badge";
+import { Textarea } from "@/components/ui/textarea";
+import { ApiError } from "@/lib/api-client";
+import { safeFormatDate, safeFormatDateTime } from "@/lib/format";
+import { messages, notify } from "@/lib/notify";
+import { cn } from "@/lib/utils";
+import { financeService } from "@/services/finance.service";
+import type { Invoice } from "@/types/api";
+
+interface AdminInvoiceDetailClientProps {
+  id: string;
+}
+
+export function AdminInvoiceDetailClient({
+  id,
+}: AdminInvoiceDetailClientProps) {
+  const queryClient = useQueryClient();
+
+  const [isEditing, setIsEditing] = React.useState(false);
+  const [isIssueDialogOpen, setIsIssueDialogOpen] = React.useState(false);
+  const [isVoidDialogOpen, setIsVoidDialogOpen] = React.useState(false);
+  const [isConfirmVoidOpen, setIsConfirmVoidOpen] = React.useState(false);
+  const [voidReason, setVoidReason] = React.useState("");
+
+  const {
+    data: invoice,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery<Invoice>({
+    queryKey: ["invoices", id],
+    queryFn: () => financeService.fetchInvoiceById(id),
+    staleTime: 10000,
+  });
+
+  // Issue Invoice Mutation
+  const issueMutation = useMutation({
+    mutationFn: async () => financeService.issueInvoice(id),
+    onSuccess: async () => {
+      notify.success(
+        messages.invoices.issued.title,
+        messages.invoices.issued.description,
+      );
+      setIsIssueDialogOpen(false);
+      await queryClient.invalidateQueries({ queryKey: ["invoices", id] });
+      await queryClient.invalidateQueries({ queryKey: ["invoices"] });
+    },
+    onError: () => {
+      queryClient.invalidateQueries({ queryKey: ["invoices", id] });
+    },
+  });
+
+  // Void Invoice Mutation
+  const voidMutation = useMutation({
+    mutationFn: async (reason: string) =>
+      financeService.voidInvoice(id, reason),
+    onSuccess: async () => {
+      notify.success(
+        messages.invoices.voided.title,
+        messages.invoices.voided.description,
+      );
+      setIsVoidDialogOpen(false);
+      setVoidReason("");
+      await queryClient.invalidateQueries({ queryKey: ["invoices", id] });
+      await queryClient.invalidateQueries({ queryKey: ["invoices"] });
+    },
+    onError: () => {
+      queryClient.invalidateQueries({ queryKey: ["invoices", id] });
+    },
+  });
+
+  if (isLoading) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center gap-3">
+          <Skeleton className="size-8 rounded-lg" />
+          <div className="space-y-1">
+            <Skeleton className="h-6 w-48" />
+            <Skeleton className="h-4 w-32" />
+          </div>
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2 space-y-6">
+            <Skeleton className="h-72 w-full rounded-xl" />
+          </div>
+          <div className="space-y-6">
+            <Skeleton className="h-80 w-full rounded-xl" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (isError || !invoice) {
+    if (error instanceof ApiError && error.status === 404) {
+      return (
+        <DetailNotFound
+          title="Invoice not found"
+          description="The requested billing invoice could not be located."
+          backHref="/admin/invoices"
+          backLabel="Back to Invoices"
+        />
+      );
+    }
+    return (
+      <div className="max-w-md mx-auto py-12">
+        <QueryError
+          error={error}
+          onRetry={refetch}
+          title="Unable to load invoice"
+        />
+      </div>
+    );
+  }
+
+  const status = String(invoice.status).toUpperCase();
+  const isDraft = status === "DRAFT";
+  const isIssued = status === "ISSUED";
+  const isPaid = status === "PAID";
+  const isVoid = status === "VOID";
+  const isCancelled = status === "CANCELLED";
+  const isRefunded = status === "REFUNDED";
+
+  const isPendingAction = issueMutation.isPending || voidMutation.isPending;
+
+  const workOrderId =
+    invoice.workOrderId ||
+    invoice.workOrder?.id ||
+    invoice.workOrder?.serviceRequestId;
+
+  return (
+    <div className="space-y-6">
+      {/* Top Navigation & Title Bar */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="space-y-1">
+          <Link
+            href="/admin/invoices"
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <ArrowLeft className="size-3.5" />
+            <span>Back to Invoices</span>
+          </Link>
+          <div className="flex items-center gap-3 pt-1">
+            <h1 className="text-xl sm:text-2xl font-bold font-mono tracking-tight text-foreground">
+              {invoice.invoiceNumber || `INV-${invoice.id.slice(0, 8)}`}
+            </h1>
+            <StatusBadge status={invoice.status} />
+          </div>
+        </div>
+
+        {/* Action Buttons for DRAFT */}
+        {isDraft && !isEditing && (
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setIsEditing(true)}
+              disabled={isPendingAction}
+              className="gap-1.5 text-xs font-medium"
+            >
+              <Edit className="size-3.5" />
+              <span>Edit Charges</span>
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => setIsIssueDialogOpen(true)}
+              disabled={isPendingAction}
+              className="gap-1.5 text-xs font-semibold shadow-xs"
+            >
+              <Send className="size-3.5" />
+              <span>Issue Invoice</span>
+            </Button>
+          </div>
+        )}
+      </div>
+
+      {/* Prominent Void Notice */}
+      {isVoid && (
+        <Alert className="border-destructive/40 bg-destructive/5 text-destructive py-3">
+          <XCircle className="size-4 text-destructive shrink-0" />
+          <div className="space-y-1">
+            <AlertTitle className="font-semibold text-xs">
+              Invoice Voided
+            </AlertTitle>
+            <AlertDescription className="text-xs text-destructive/90">
+              {invoice.voidReason
+                ? `Reason: ${invoice.voidReason}`
+                : "This invoice was voided by an administrator and is no longer payable."}
+            </AlertDescription>
+          </div>
+        </Alert>
+      )}
+
+      {/* Inline Editing Form for Draft */}
+      {isEditing && isDraft ? (
+        <EditInvoiceForm
+          invoice={invoice}
+          onCancel={() => setIsEditing(false)}
+          onSuccess={() => setIsEditing(false)}
+        />
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Main Details (Left 2 Cols) */}
+          <div className="lg:col-span-2 space-y-6">
+            <InvoiceBreakdown invoice={invoice} />
+
+            {/* Internal Notes / Customer Note */}
+            {invoice.notes && (
+              <Card className="border-border shadow-xs">
+                <CardHeader className="pb-2 border-b border-border">
+                  <CardTitle className="text-xs font-bold text-foreground">
+                    Invoice Notes &amp; Instructions
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="p-4">
+                  <p className="text-xs text-muted-foreground whitespace-pre-wrap leading-relaxed">
+                    {invoice.notes}
+                  </p>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+
+          {/* Sidebar Info & Action Controls (Right Col) */}
+          <div className="space-y-6">
+            {/* Status & Lifecycle Actions Card */}
+            <Card className="border-border shadow-xs">
+              <CardHeader className="pb-3 border-b border-border">
+                <CardTitle className="text-sm font-bold text-foreground">
+                  Invoice Management
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-5 space-y-4">
+                {isDraft && (
+                  <div className="space-y-3">
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      This draft invoice is not yet visible to the customer.
+                      Review the calculated amounts, edit if needed, and issue
+                      the invoice.
+                    </p>
+                    <div className="space-y-2 pt-1">
+                      <Button
+                        size="sm"
+                        onClick={() => setIsIssueDialogOpen(true)}
+                        disabled={isPendingAction}
+                        className="w-full gap-2 text-xs font-semibold shadow-xs"
+                      >
+                        <Send className="size-3.5" />
+                        <span>Issue Invoice</span>
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setIsEditing(true)}
+                        disabled={isPendingAction}
+                        className="w-full gap-2 text-xs font-medium"
+                      >
+                        <Edit className="size-3.5" />
+                        <span>Edit Line Items</span>
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setIsVoidDialogOpen(true)}
+                        disabled={isPendingAction}
+                        className="w-full gap-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+                      >
+                        <XCircle className="size-3.5" />
+                        <span>Void Invoice</span>
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {isIssued && (
+                  <div className="space-y-3">
+                    <Alert className="bg-blue-500/10 border-blue-500/30 text-blue-900 dark:text-blue-200 text-xs py-2.5">
+                      <Clock className="size-4 text-blue-600 dark:text-blue-400 shrink-0" />
+                      <AlertDescription>
+                        Issued to customer for payment. The customer can pay via
+                        online Stripe checkout.
+                      </AlertDescription>
+                    </Alert>
+                    <div className="pt-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setIsVoidDialogOpen(true)}
+                        disabled={isPendingAction}
+                        className="w-full gap-2 text-xs text-destructive border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
+                      >
+                        <XCircle className="size-3.5" />
+                        <span>Void Invoice</span>
+                      </Button>
+                      <p className="text-[11px] text-muted-foreground text-center mt-2">
+                        Voiding an unpaid invoice cannot be undone.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {isPaid && (
+                  <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl space-y-3">
+                    <div className="flex items-center gap-2 text-emerald-800 dark:text-emerald-300 font-semibold text-xs">
+                      <CheckCircle2 className="size-4" />
+                      <span>Payment Completed</span>
+                    </div>
+                    <p className="text-xs text-emerald-700/90 dark:text-emerald-400/90 leading-relaxed">
+                      This invoice was paid in full on{" "}
+                      {invoice.paidAt
+                        ? safeFormatDateTime(invoice.paidAt)
+                        : "record"}
+                      .
+                    </p>
+                    <div className="pt-1 border-t border-emerald-500/20">
+                      <Link
+                        href="/admin/payments"
+                        className={cn(
+                          buttonVariants({ variant: "outline", size: "sm" }),
+                          "w-full gap-1.5 text-xs font-semibold bg-background/80 hover:bg-background",
+                        )}
+                      >
+                        <Wallet className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+                        <span>View Payments &amp; Refunds</span>
+                      </Link>
+                    </div>
+                  </div>
+                )}
+
+                {isRefunded && (
+                  <div className="p-3.5 bg-purple-500/10 border border-purple-500/30 rounded-xl space-y-2 text-xs">
+                    <div className="flex items-center gap-2 text-purple-800 dark:text-purple-300 font-semibold">
+                      <RotateCcw className="size-4" />
+                      <span>Payment Refunded</span>
+                    </div>
+                    <p className="text-purple-700/90 dark:text-purple-400/90 leading-relaxed">
+                      The payment transaction for this invoice has been refunded
+                      to the customer.
+                    </p>
+                    <div className="pt-1 border-t border-purple-500/20">
+                      <Link
+                        href="/admin/payments"
+                        className={cn(
+                          buttonVariants({ variant: "outline", size: "sm" }),
+                          "w-full gap-1.5 text-xs font-semibold bg-background/80 hover:bg-background",
+                        )}
+                      >
+                        <Wallet className="size-3.5 text-purple-600 dark:text-purple-400" />
+                        <span>View Payment Records</span>
+                      </Link>
+                    </div>
+                  </div>
+                )}
+
+                {(isVoid || isCancelled) && (
+                  <div className="p-3 bg-muted/40 border border-border rounded-xl space-y-1 text-xs text-muted-foreground">
+                    <span className="font-semibold text-foreground block">
+                      Read-Only Record
+                    </span>
+                    <p>
+                      This invoice is closed in status {status} and cannot be
+                      modified.
+                    </p>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Customer & Job Metadata Card */}
+            <Card className="border-border shadow-xs">
+              <CardHeader className="pb-3 border-b border-border">
+                <CardTitle className="text-xs font-bold text-foreground">
+                  Associated Details
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-4 space-y-3.5 text-xs">
+                {/* Customer */}
+                <div className="space-y-1">
+                  <span className="text-[10px] uppercase font-semibold text-muted-foreground block">
+                    Customer
+                  </span>
+                  <div className="flex items-start gap-2">
+                    <User className="size-3.5 text-muted-foreground mt-0.5 shrink-0" />
+                    <div>
+                      <p className="font-semibold text-foreground">
+                        {invoice.customer?.name || "Customer"}
+                      </p>
+                      {invoice.customer?.email && (
+                        <p className="text-[11px] text-muted-foreground">
+                          {invoice.customer.email}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Associated Work Order */}
+                {workOrderId && (
+                  <div className="space-y-1 pt-2 border-t border-border/60">
+                    <span className="text-[10px] uppercase font-semibold text-muted-foreground block">
+                      Work Order
+                    </span>
+                    <Link
+                      href={`/admin/work-orders/${workOrderId}`}
+                      className="inline-flex items-center gap-1.5 font-mono text-primary font-semibold hover:underline"
+                    >
+                      <span>
+                        WO #
+                        {invoice.workOrder?.workOrderNumber ||
+                          workOrderId.slice(0, 8)}
+                      </span>
+                      <ExternalLink className="size-3" />
+                    </Link>
+                  </div>
+                )}
+
+                {/* Dates Information */}
+                <div className="space-y-2 pt-2 border-t border-border/60 text-xs">
+                  <div className="flex justify-between items-center text-muted-foreground">
+                    <span>Created Date:</span>
+                    <span className="font-medium text-foreground">
+                      {safeFormatDate(invoice.createdAt)}
+                    </span>
+                  </div>
+
+                  <div className="flex justify-between items-center text-muted-foreground">
+                    <span>Issued Date:</span>
+                    <span className="font-medium text-foreground">
+                      {invoice.issuedAt
+                        ? safeFormatDate(invoice.issuedAt)
+                        : "—"}
+                    </span>
+                  </div>
+
+                  <div className="flex justify-between items-center text-muted-foreground">
+                    <span>Due Date:</span>
+                    <span className="font-medium text-foreground">
+                      {invoice.dueDate ? safeFormatDate(invoice.dueDate) : "—"}
+                    </span>
+                  </div>
+
+                  {invoice.paidAt && (
+                    <div className="flex justify-between items-center text-muted-foreground">
+                      <span>Paid Date:</span>
+                      <span className="font-medium text-emerald-600 dark:text-emerald-400">
+                        {safeFormatDate(invoice.paidAt)}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      )}
+
+      {/* Issue Invoice Confirmation */}
+      <ConfirmDialog
+        open={isIssueDialogOpen}
+        onOpenChange={(val) => {
+          if (!issueMutation.isPending) setIsIssueDialogOpen(val);
+        }}
+        title="Issue this invoice to the customer?"
+        description="The invoice status will change to ISSUED and the customer will be notified by email. They will be able to view and pay the invoice online."
+        confirmLabel="Confirm & Issue"
+        pending={issueMutation.isPending}
+        onConfirm={() => issueMutation.mutate()}
+      />
+
+      {/* Dialog: Void Invoice Reason */}
+      <Dialog
+        open={isVoidDialogOpen}
+        onOpenChange={(val) => {
+          if (!voidMutation.isPending) {
+            setIsVoidDialogOpen(val);
+            if (!val) setVoidReason("");
+          }
+        }}
+      >
+        <DialogContent
+          className="sm:max-w-md"
+          showCloseButton={!voidMutation.isPending}
+        >
+          <DialogHeader className="space-y-1.5">
+            <DialogTitle className="text-base sm:text-lg font-bold flex items-center gap-2 text-destructive">
+              <ShieldAlert className="size-5 text-destructive shrink-0" />
+              <span>Void Invoice</span>
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              The invoice will be voided and can no longer be paid. Please
+              provide an audit reason (5 to 300 characters).
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 py-2 text-xs">
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="void-reason" className="text-xs font-semibold">
+                  Reason for Voiding <span className="text-destructive">*</span>
+                </Label>
+                <span className="text-[10px] text-muted-foreground">
+                  {voidReason.trim().length} / 300
+                </span>
+              </div>
+              <Textarea
+                id="void-reason"
+                value={voidReason}
+                onChange={(e) => setVoidReason(e.target.value)}
+                placeholder="e.g. Job canceled prior to technician arrival; billing adjustment required."
+                rows={3}
+                maxLength={300}
+                disabled={voidMutation.isPending}
+                className="text-xs resize-none"
+              />
+            </div>
+          </div>
+
+          <DialogFooter className="gap-2 sm:gap-0 pt-2 border-t border-border">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setIsVoidDialogOpen(false)}
+              disabled={voidMutation.isPending}
+              className="text-xs"
+            >
+              Keep Invoice
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                setIsConfirmVoidOpen(true);
+              }}
+              disabled={
+                voidMutation.isPending ||
+                voidReason.trim().length < 5 ||
+                voidReason.trim().length > 300
+              }
+              className="gap-2 text-xs font-semibold"
+            >
+              <span>Continue to Void</span>
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirmation Step for Void */}
+      <ConfirmDialog
+        open={isConfirmVoidOpen}
+        onOpenChange={setIsConfirmVoidOpen}
+        title="Permanently void this invoice?"
+        description={`This invoice will be marked as VOID with audit reason: "${voidReason.trim()}". The customer will no longer be able to pay it, and this action cannot be undone.`}
+        confirmLabel="Confirm & Void Invoice"
+        variant="destructive"
+        pending={voidMutation.isPending}
+        onConfirm={async () => {
+          await voidMutation.mutateAsync(voidReason.trim());
+          setIsConfirmVoidOpen(false);
+        }}
+      />
+    </div>
+  );
+}
